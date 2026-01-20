@@ -1,82 +1,163 @@
-(function(){
-  'use strict';
+/*!
+ * BCS Magazine Runtime (No React)
+ * File: bcs-magazine-runtime.js
+ * Version: 2026-01-20-option-b
+ *
+ * Exposes: window.BCSMagazine.mount(...)
+ * Auto-mounts: any element with [data-bcs-magazine-json]
+ */
+(function () {
+  "use strict";
 
-  const VERSION = 'try-a-2026-01-20';
+  var VERSION = "2026-01-20-option-b";
 
-  function E(tag, attrs){
-    const n = document.createElement(tag);
+  // ----------------------------
+  // Utilities
+  // ----------------------------
+
+  function E(tag, attrs) {
+    var n = document.createElement(tag);
     if (attrs) {
-      for (const k in attrs) {
-        const v = attrs[k];
-        if (k === 'class') n.className = v;
-        else if (k === 'text') n.textContent = v;
-        else if (k === 'html') n.innerHTML = v;
-        else if (k === 'style') n.setAttribute('style', v);
-        else if (k.startsWith('data-')) n.setAttribute(k, v);
-        else if (k === 'role') n.setAttribute('role', v);
-        else if (k === 'ariaLabel') n.setAttribute('aria-label', v);
+      Object.keys(attrs).forEach(function (k) {
+        var v = attrs[k];
+        if (k === "class") n.className = v;
+        else if (k === "text") n.textContent = v;
+        else if (k === "html") n.innerHTML = v;
+        else if (k === "style") n.setAttribute("style", v);
+        else if (k === "role") n.setAttribute("role", v);
+        else if (k === "ariaLabel") n.setAttribute("aria-label", v);
+        else if (k.indexOf("data-") === 0) n.setAttribute(k, v);
         else n.setAttribute(k, v);
-      }
+      });
     }
-    for (let i = 2; i < arguments.length; i++) {
-      const c = arguments[i];
+    for (var i = 2; i < arguments.length; i++) {
+      var c = arguments[i];
       if (c == null) continue;
-      if (typeof c === 'string') n.appendChild(document.createTextNode(c));
+      if (typeof c === "string") n.appendChild(document.createTextNode(c));
       else n.appendChild(c);
     }
     return n;
   }
 
-  async function fetchJson(url){
-    const res = await fetch(url, { cache: 'no-store' });
-    if (!res.ok) throw new Error('Failed to fetch JSON (' + res.status + ')');
-    const text = await res.text();
-    const t = text.trim();
-    if (!t || (t[0] !== '{' && t[0] !== '[')) throw new Error('Invalid JSON content');
-    return JSON.parse(t);
+  function safeText(s) {
+    try {
+      return String(s);
+    } catch (e) {
+      return "Unknown error";
+    }
   }
 
-  function normalizePages(doc){
+  function setError(root, msg) {
+    root.innerHTML = "";
+    root.appendChild(
+      E("div", { class: "bcs-error", role: "alert" }, "BCS Magazine error: " + msg)
+    );
+  }
+
+  function stripBOM(text) {
+    // Remove BOM if present
+    if (!text) return text;
+    return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+  }
+
+  function isLikelyJson(text) {
+    if (!text) return false;
+    var t = stripBOM(text).trim();
+    return t.length > 0 && (t[0] === "{" || t[0] === "[");
+  }
+
+  function pageUrl(p) {
+    if (!p) return null;
+    if (typeof p === "string") return p;
+    return p.imageUrl || p.url || p.src || null;
+  }
+
+  function normalizePages(doc) {
+    // Accept common shapes:
+    // 1) [ "url1", "url2", ... ]
+    // 2) { pages: [ {imageUrl:"..."}, ... ] }
+    // 3) { spreads: [ {left:{imageUrl}, right:{imageUrl}}, ... ] }
     if (Array.isArray(doc)) return doc;
+
     if (doc && Array.isArray(doc.pages)) return doc.pages;
+
     if (doc && Array.isArray(doc.spreads)) {
-      const out = [];
-      for (const s of doc.spreads) {
-        if (s && s.left) out.push({ imageUrl: s.left.imageUrl || s.left.url || s.left });
-        if (s && s.right) out.push({ imageUrl: s.right.imageUrl || s.right.url || s.right });
-      }
+      var out = [];
+      doc.spreads.forEach(function (s) {
+        if (!s) return;
+        if (s.left) out.push({ imageUrl: pageUrl(s.left) || s.left.imageUrl || s.left.url || s.left });
+        if (s.right) out.push({ imageUrl: pageUrl(s.right) || s.right.imageUrl || s.right.url || s.right });
+      });
       return out;
     }
+
     return [];
   }
 
-  function pageUrl(p){
-    if (!p) return null;
-    if (typeof p === 'string') return p;
-    return p.imageUrl || p.url || null;
+  function fetchJson(url) {
+    return fetch(url, { cache: "no-store" })
+      .then(function (res) {
+        if (!res.ok) throw new Error("Failed to fetch JSON (" + res.status + ")");
+        return res.text();
+      })
+      .then(function (text) {
+        var t = stripBOM(text);
+        if (!isLikelyJson(t)) throw new Error("Invalid JSON content (not JSON)");
+        return JSON.parse(t);
+      });
   }
 
-  function mount(root, opts){
+  // ----------------------------
+  // Core viewer
+  // ----------------------------
+
+  function mount(root, opts) {
     opts = opts || {};
-    const jsonUrl = opts.jsonUrl;
+    var jsonUrl = opts.jsonUrl;
+
+    if (!root) throw new Error("mount(): missing container element");
+
+    // Ensure focusable for keyboard nav
+    if (!root.hasAttribute("tabindex")) root.tabIndex = 0;
+
     if (!jsonUrl) {
-      root.innerHTML = '<div class="bcs-error">BCS Magazine: Missing json_url.</div>';
+      setError(root, "Missing json_url.");
       return;
     }
 
-    root.classList.add('bcs-root');
-    root.innerHTML = '';
+    // Build DOM
+    root.classList.add("bcs-root");
+    root.innerHTML = "";
 
-    const toolbar = E('div', { class: 'bcs-toolbar', role: 'toolbar', ariaLabel: 'Magazine toolbar' });
-    const btnMenu = E('button', { class: 'bcs-btn', type: 'button', ariaLabel: 'Table of contents', text: 'TOC' });
-    const btnPrev = E('button', { class: 'bcs-btn', type: 'button', ariaLabel: 'Previous', text: '◀' });
-    const btnNext = E('button', { class: 'bcs-btn', type: 'button', ariaLabel: 'Next', text: '▶' });
-    const title = E('div', { class: 'bcs-title', text: 'Magazine' });
-    const status = E('div', { class: 'bcs-status', text: '' });
+    var toolbar = E("div", {
+      class: "bcs-toolbar",
+      role: "toolbar",
+      ariaLabel: "Magazine toolbar",
+    });
 
-    const toc = E('div', { class: 'bcs-toc', 'data-open': '0' });
-    const tocList = E('div', { class: 'bcs-toc-list' });
-    toc.appendChild(tocList);
+    var btnMenu = E("button", {
+      class: "bcs-btn",
+      type: "button",
+      ariaLabel: "Table of contents",
+      text: "TOC",
+    });
+
+    var btnPrev = E("button", {
+      class: "bcs-btn",
+      type: "button",
+      ariaLabel: "Previous spread",
+      text: "◀",
+    });
+
+    var btnNext = E("button", {
+      class: "bcs-btn",
+      type: "button",
+      ariaLabel: "Next spread",
+      text: "▶",
+    });
+
+    var title = E("div", { class: "bcs-title", text: "Magazine" });
+    var status = E("div", { class: "bcs-status", text: "" });
 
     toolbar.appendChild(btnMenu);
     toolbar.appendChild(btnPrev);
@@ -84,12 +165,18 @@
     toolbar.appendChild(btnNext);
     toolbar.appendChild(status);
 
-    const stage = E('div', { class: 'bcs-stage' });
-    const book = E('div', { class: 'bcs-book' });
-    const pageL = E('div', { class: 'bcs-page bcs-left' });
-    const pageR = E('div', { class: 'bcs-page bcs-right' });
-    const imgL = E('img', { class: 'bcs-img', alt: 'Left page' });
-    const imgR = E('img', { class: 'bcs-img', alt: 'Right page' });
+    var toc = E("div", { class: "bcs-toc", "data-open": "0" });
+    var tocList = E("div", { class: "bcs-toc-list" });
+    toc.appendChild(tocList);
+
+    var stage = E("div", { class: "bcs-stage" });
+    var book = E("div", { class: "bcs-book" });
+
+    var pageL = E("div", { class: "bcs-page bcs-left" });
+    var pageR = E("div", { class: "bcs-page bcs-right" });
+    var imgL = E("img", { class: "bcs-img", alt: "Left page" });
+    var imgR = E("img", { class: "bcs-img", alt: "Right page" });
+
     pageL.appendChild(imgL);
     pageR.appendChild(imgR);
     book.appendChild(pageL);
@@ -100,236 +187,157 @@
     root.appendChild(toc);
     root.appendChild(stage);
 
-    let pages = [];
-    let index = 0; // spread index
+    // State
+    var pages = [];
+    var spreadIndex = 0;
 
-    function render(){
-      const leftIdx = index * 2;
-      const rightIdx = leftIdx + 1;
-      const left = pageUrl(pages[leftIdx]);
-      const right = pageUrl(pages[rightIdx]);
-
-      // If only one page left (odd count), keep right blank
-      imgL.style.display = left ? 'block' : 'none';
-      imgR.style.display = right ? 'block' : 'none';
-      imgL.src = left || '';
-      imgR.src = right || '';
-
-      const totalSpreads = Math.max(1, Math.ceil(pages.length / 2));
-      status.textContent = (index + 1) + ' / ' + totalSpreads;
-
-      btnPrev.disabled = index <= 0;
-      btnNext.disabled = index >= totalSpreads - 1;
+    function totalSpreads() {
+      return Math.max(1, Math.ceil(pages.length / 2));
     }
 
-    function openToc(open){
-      toc.setAttribute('data-open', open ? '1' : '0');
+    function render() {
+      var leftIdx = spreadIndex * 2;
+      var rightIdx = leftIdx + 1;
+
+      var left = pageUrl(pages[leftIdx]);
+      var right = pageUrl(pages[rightIdx]);
+
+      if (left) {
+        imgL.style.display = "block";
+        imgL.src = left;
+      } else {
+        imgL.style.display = "none";
+        imgL.removeAttribute("src");
+      }
+
+      if (right) {
+        imgR.style.display = "block";
+        imgR.src = right;
+      } else {
+        imgR.style.display = "none";
+        imgR.removeAttribute("src");
+      }
+
+      status.textContent = (spreadIndex + 1) + " / " + totalSpreads();
+
+      btnPrev.disabled = spreadIndex <= 0;
+      btnNext.disabled = spreadIndex >= totalSpreads() - 1;
     }
 
-    btnMenu.addEventListener('click', function(){
-      openToc(toc.getAttribute('data-open') !== '1');
+    function openToc(open) {
+      toc.setAttribute("data-open", open ? "1" : "0");
+    }
+
+    // Events
+    btnMenu.addEventListener("click", function () {
+      openToc(toc.getAttribute("data-open") !== "1");
     });
 
-    btnPrev.addEventListener('click', function(){
-      index = Math.max(0, index - 1);
+    btnPrev.addEventListener("click", function () {
+      spreadIndex = Math.max(0, spreadIndex - 1);
       render();
     });
 
-    btnNext.addEventListener('click', function(){
-      const totalSpreads = Math.max(1, Math.ceil(pages.length / 2));
-      index = Math.min(totalSpreads - 1, index + 1);
+    btnNext.addEventListener("click", function () {
+      spreadIndex = Math.min(totalSpreads() - 1, spreadIndex + 1);
       render();
     });
 
-    toc.addEventListener('click', function(e){
-      const a = e.target.closest('[data-spread]');
-      if (!a) return;
-      index = parseInt(a.getAttribute('data-spread') || '0', 10) || 0;
+    toc.addEventListener("click", function (e) {
+      var target = e.target;
+      if (!target) return;
+
+      var btn = target.closest ? target.closest("[data-spread]") : null;
+      if (!btn) return;
+
+      var v = parseInt(btn.getAttribute("data-spread") || "0", 10);
+      spreadIndex = isNaN(v) ? 0 : Math.max(0, Math.min(totalSpreads() - 1, v));
       openToc(false);
       render();
     });
 
-    // Keyboard
-    root.addEventListener('keydown', function(e){
-      if (e.key === 'ArrowLeft') { btnPrev.click(); e.preventDefault(); }
-      if (e.key === 'ArrowRight') { btnNext.click(); e.preventDefault(); }
-      if (e.key === 'Escape') { openToc(false); }
-    });
-    root.tabIndex = 0;
+    root.addEventListener("keydown", function (e) {
+      // Do not interfere with typing in inputs (if any wrapper adds them)
+      var t = e.target;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
 
-    (async function(){
-      try {
-        const doc = await fetchJson(jsonUrl);
+      if (e.key === "ArrowLeft") {
+        btnPrev.click();
+        e.preventDefault();
+      } else if (e.key === "ArrowRight") {
+        btnNext.click();
+        e.preventDefault();
+      } else if (e.key === "Escape") {
+        openToc(false);
+      }
+    });
+
+    // Load JSON
+    fetchJson(jsonUrl)
+      .then(function (doc) {
         pages = normalizePages(doc);
-        if (!pages.length) throw new Error('No pages in viewer.json');
+        if (!pages || !pages.length) throw new Error("No pages found in viewer.json");
 
         // Build TOC
-        tocList.innerHTML = '';
-        const totalSpreads = Math.max(1, Math.ceil(pages.length / 2));
-        for (let s = 0; s < totalSpreads; s++) {
-          const label = 'Spread ' + (s + 1);
-          tocList.appendChild(E('button', { class: 'bcs-toc-item', type: 'button', 'data-spread': String(s), text: label }));
+        tocList.innerHTML = "";
+        for (var s = 0; s < totalSpreads(); s++) {
+          tocList.appendChild(
+            E("button", {
+              class: "bcs-toc-item",
+              type: "button",
+              "data-spread": String(s),
+              text: "Spread " + (s + 1),
+            })
+          );
         }
 
-        index = 0;
+        spreadIndex = 0;
         render();
-      } catch (err) {
-        root.innerHTML = '<div class="bcs-error">BCS Magazine error: ' + (err && err.message ? err.message : String(err)) + '</div>';
-      }
-    })();
+      })
+      .catch(function (err) {
+        setError(root, err && err.message ? err.message : safeText(err));
+      });
   }
 
-  // Public API
-  window.BCS_MAGAZINE = window.BCS_MAGAZINE || {};
-  window.BCS_MAGAZINE.version = VERSION;
-  window.BCS_MAGAZINE.mount = function(container, opts){
-    if (typeof container === 'string') {
-      const el = document.querySelector(container);
-      if (!el) throw new Error('Container not found: ' + container);
+  // ----------------------------
+  // Public API expected by WP plugin
+  // ----------------------------
+
+  // WP plugin expects: window.BCSMagazine.mount(...)
+  window.BCSMagazine = window.BCSMagazine || {};
+  window.BCSMagazine.version = VERSION;
+
+  window.BCSMagazine.mount = function (container, opts) {
+    if (typeof container === "string") {
+      var el = document.querySelector(container);
+      if (!el) throw new Error("Container not found: " + container);
       return mount(el, opts);
     }
     return mount(container, opts);
   };
 
-  // Auto-mount any placeholders
-  document.addEventListener('DOMContentLoaded', function(){
-    const nodes = document.querySelectorAll('[data-bcs-magazine-json]');
-    nodes.forEach(function(n){
-      if (n.getAttribute('data-bcs-mounted') === '1') return;
-      n.setAttribute('data-bcs-mounted', '1');
-      const jsonUrl = n.getAttribute('data-bcs-magazine-json');
-      mount(n, { jsonUrl });
-    });
+  // Back-compat alias (safe)
+  window.BCS_MAGAZINE = window.BCSMagazine;
+
+  // ----------------------------
+  // Auto-mount placeholders emitted by shortcode/plugin
+  // ----------------------------
+
+  document.addEventListener("DOMContentLoaded", function () {
+    var nodes = document.querySelectorAll("[data-bcs-magazine-json]");
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (n.getAttribute("data-bcs-mounted") === "1") continue;
+      n.setAttribute("data-bcs-mounted", "1");
+
+      var jsonUrl = n.getAttribute("data-bcs-magazine-json");
+      if (!jsonUrl) continue;
+
+      try {
+        mount(n, { jsonUrl: jsonUrl });
+      } catch (e) {
+        setError(n, e && e.message ? e.message : safeText(e));
+      }
+    }
   });
 })();
-
-/* BCS Magazine Runtime CSS (TRY A) */
-
-:root{
-  --bcs-toolbar-bg: rgba(20,20,20,0.7);
-  --bcs-toolbar-fg: #fff;
-}
-
-.bcs-magazine-root{
-  width: 100%;
-  min-height: 600px;
-  position: relative;
-}
-
-/* Don't fight the Figma wrapper. We only ensure our UI stays visible. */
-.bcs-toolbar{
-  position: absolute;
-  top: 16px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 99999;
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border-radius: 10px;
-  background: var(--bcs-toolbar-bg);
-  color: var(--bcs-toolbar-fg);
-  backdrop-filter: blur(6px);
-}
-
-.bcs-toolbar button{
-  cursor: pointer;
-  border: 1px solid rgba(255,255,255,0.25);
-  background: transparent;
-  color: inherit;
-  padding: 6px 10px;
-  border-radius: 8px;
-  font: inherit;
-}
-
-.bcs-toolbar button:hover{ background: rgba(255,255,255,0.08); }
-
-.bcs-toolbar .bcs-meta{
-  opacity: 0.85;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.bcs-toc{
-  position: absolute;
-  top: 64px;
-  left: 50%;
-  transform: translateX(-50%);
-  z-index: 99999;
-  width: min(520px, calc(100% - 24px));
-  max-height: 360px;
-  overflow: auto;
-  background: rgba(20,20,20,0.92);
-  color: #fff;
-  border-radius: 12px;
-  padding: 10px;
-  display: none;
-}
-
-.bcs-toc.is-open{ display: block; }
-
-.bcs-toc .item{
-  padding: 8px 10px;
-  border-radius: 10px;
-  cursor: pointer;
-}
-
-.bcs-toc .item:hover{ background: rgba(255,255,255,0.08); }
-
-.bcs-book{
-  position: relative;
-  width: 100%;
-  height: 100%;
-  display: grid;
-  place-items: center;
-  padding: 40px 0 20px;
-}
-
-.bcs-spread{
-  width: min(1100px, calc(100% - 24px));
-  aspect-ratio: 2 / 1;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  border-radius: 8px;
-  overflow: hidden;
-  box-shadow: 0 20px 50px rgba(0,0,0,0.35);
-}
-
-.bcs-page{
-  background: #111;
-  position: relative;
-}
-
-.bcs-page img{
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-}
-
-.bcs-spine{
-  position: absolute;
-  left: 50%;
-  top: 0;
-  transform: translateX(-50%);
-  width: 26px;
-  height: 100%;
-  background: rgba(0,0,0,0.35);
-  filter: blur(2px);
-  pointer-events: none;
-}
-
-.bcs-status{
-  position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  color: #333;
-  font-size: 16px;
-}
-
-@media (max-width: 900px){
-  .bcs-spread{ aspect-ratio: 1 / 1.35; grid-template-columns: 1fr; }
-  .bcs-spine{ display: none; }
-}
